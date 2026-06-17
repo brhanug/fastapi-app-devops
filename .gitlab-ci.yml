@@ -34,7 +34,7 @@ build-image:
     DOCKER_HOST: unix:///var/run/docker.sock
   script:
     # Login to local GitLab Container Registry
-    - docker login -u root -p 'xY9$$kL2#mP5*qT1!' localhost:5005
+    - docker login -u root -p 'xY9$kL2#mP5*qT1!' localhost:5005
     # Build and tag the image
     - docker build -t localhost:5005/root/fastapi-app:$CI_COMMIT_SHA -t localhost:5005/root/fastapi-app:latest ./app
     # Push the images
@@ -53,6 +53,6 @@ deploy-to-k8s:
     - sed -i 's/127.0.0.1:[0-9]*/k3d-dev-cluster-server-0:6443/g' ~/.kube/config
     - sed -i 's/0.0.0.0:[0-9]*/k3d-dev-cluster-server-0:6443/g' ~/.kube/config
     # Create image pull secret for the GitLab Registry
-    - kubectl create secret docker-registry gitlab-registry-credentials --docker-server=localhost:5005 --docker-username=root --docker-password='xY9$$kL2#mP5*qT1!' --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl create secret docker-registry gitlab-registry-credentials --docker-server=localhost:5005 --docker-username=root --docker-password='xY9$kL2#mP5*qT1!' --dry-run=client -o yaml | kubectl apply -f -
     # Deploy using helm
     - helm upgrade --install fastapi-app ./helm/fastapi-app --set image.tag=$CI_COMMIT_SHA
