@@ -2,6 +2,7 @@ stages:
   - lint
   - test
   - build
+  - release
   - deploy
 
 variables:
@@ -56,3 +57,69 @@ deploy-to-k8s:
     - kubectl create secret docker-registry gitlab-registry-credentials --docker-server=localhost:5005 --docker-username=root --docker-password='xY9$kL2#mP5*qT1!' --dry-run=client -o yaml | kubectl apply -f -
     # Deploy using helm
     - helm upgrade --install fastapi-app ./helm/fastapi-app --set image.tag=$CI_COMMIT_SHA
+
+# =========================================================================
+# ETL DATA PIPELINE JOBS (Project 2)
+# =========================================================================
+
+lint-etl:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install ruff
+    - ruff check 02-devsecops-etl/
+
+sec-scan-etl:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install bandit
+    - bandit -r 02-devsecops-etl/ --level medium
+
+test-etl:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - cd 02-devsecops-etl
+    - pip install -r requirements.txt
+    - pytest
+
+build-etl:
+  stage: build
+  image: docker:24.0.5
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  script:
+    - docker build -t localhost:5005/root/devsecops-etl:$CI_COMMIT_SHA -t localhost:5005/root/devsecops-etl:latest ./02-devsecops-etl
+
+trivy-scan-etl:
+  stage: build
+  image:
+    name: aquasec/trivy:0.49.1
+    entrypoint: [""]
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+    TRIVY_CACHE_DIR: ".trivycache/"
+  needs:
+    - build-etl
+  script:
+    # Scan built image for CRITICAL vulnerabilities
+    - trivy image --cache-dir $TRIVY_CACHE_DIR --exit-code 1 --severity CRITICAL localhost:5005/root/devsecops-etl:latest
+  cache:
+    key: trivy-cache
+    paths:
+      - .trivycache/
+
+push-etl:
+  stage: release
+  image: docker:24.0.5
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - build-etl
+    - trivy-scan-etl
+  script:
+    - docker login -u root -p 'xY9$kL2#mP5*qT1!' localhost:5005
+    - docker push localhost:5005/root/devsecops-etl:$CI_COMMIT_SHA
+    - docker push localhost:5005/root/devsecops-etl:latest
+
