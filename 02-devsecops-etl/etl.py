@@ -2,9 +2,11 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime
 
 import httpx
+from prometheus_client import CollectorRegistry, Counter, Gauge, push_to_gateway
 from pydantic import BaseModel, Field, ValidationError
 
 # Configure Logging
@@ -20,6 +22,31 @@ API_URL = os.getenv("ETL_API_URL", "https://api.open-meteo.com/v1/forecast")
 LATITUDE = os.getenv("ETL_LATITUDE", "50.8503")  # Brussels
 LONGITUDE = os.getenv("ETL_LONGITUDE", "4.3517")
 DB_PATH = os.getenv("ETL_DB_PATH", "weather_data.db")
+PUSHGATEWAY_URL = os.getenv("ETL_PUSHGATEWAY_URL", "")
+
+# Observability metrics definition
+registry = CollectorRegistry()
+
+weather_etl_success = Gauge(
+    "weather_etl_run_success",
+    "Was the last Weather ETL run successful (1) or did it fail (0)",
+    registry=registry,
+)
+weather_etl_duration = Gauge(
+    "weather_etl_run_duration_seconds",
+    "Duration of the last Weather ETL run in seconds",
+    registry=registry,
+)
+weather_etl_records = Counter(
+    "weather_etl_records_inserted_total",
+    "Total number of weather records inserted into the database",
+    registry=registry,
+)
+weather_etl_last_success = Gauge(
+    "weather_etl_last_success_timestamp_seconds",
+    "Epoch timestamp of the last successful Weather ETL run",
+    registry=registry,
+)
 
 
 # Pydantic schema for transform/validation
@@ -91,10 +118,13 @@ def transform_data(payload: dict) -> dict:
         raise ValueError("Invalid weather payload structure") from e
 
 
-def load_data(db_path: str, data: dict):
-    """Load transformed data into SQLite securely using parameterized queries."""
+def load_data(db_path: str, data: dict) -> bool:
+    """Load transformed data into SQLite securely using parameterized queries.
+    Returns True if record was inserted, False otherwise.
+    """
     logger.info(f"Loading record into database at {db_path}...")
     conn = sqlite3.connect(db_path)
+    inserted = False
     try:
         cursor = conn.cursor()
         # Parameterized query to prevent SQL Injection (verified by Bandit)
@@ -116,6 +146,7 @@ def load_data(db_path: str, data: dict):
         conn.commit()
         if cursor.rowcount > 0:
             logger.info("Record loaded successfully into DB.")
+            inserted = True
         else:
             logger.info("Duplicate record skipped.")
     except sqlite3.Error as e:
@@ -123,20 +154,47 @@ def load_data(db_path: str, data: dict):
         raise
     finally:
         conn.close()
+    return inserted
+
+
+def push_metrics(gateway_url: str, job_name: str = "weather_etl"):
+    if not gateway_url:
+        logger.info("Prometheus Pushgateway URL not set. Skipping metrics push.")
+        return
+    logger.info(f"Pushing metrics to Prometheus Pushgateway at {gateway_url}...")
+    try:
+        push_to_gateway(gateway_url, job=job_name, registry=registry)
+        logger.info("Metrics successfully pushed.")
+    except Exception as e:
+        logger.error(f"Failed to push metrics to Pushgateway: {e}")
 
 
 def run_etl():
     """Run the end-to-end ETL flow."""
     logger.info("Starting Weather ETL Ingestion Pipeline...")
+    start_time = time.time()
+    success = 0
     try:
         init_db(DB_PATH)
         raw_payload = extract_data(API_URL, LATITUDE, LONGITUDE)
         transformed_record = transform_data(raw_payload)
-        load_data(DB_PATH, transformed_record)
+        inserted = load_data(DB_PATH, transformed_record)
+        if inserted:
+            weather_etl_records.inc(1)
+        else:
+            weather_etl_records.inc(0)
+        success = 1
+        weather_etl_last_success.set(time.time())
         logger.info("ETL Pipeline completed successfully!")
     except Exception as e:
         logger.critical(f"ETL Pipeline execution failed: {e}", exc_info=True)
-        sys.exit(1)
+        success = 0
+        raise
+    finally:
+        duration = time.time() - start_time
+        weather_etl_duration.set(duration)
+        weather_etl_success.set(success)
+        push_metrics(PUSHGATEWAY_URL)
 
 
 if __name__ == "__main__":

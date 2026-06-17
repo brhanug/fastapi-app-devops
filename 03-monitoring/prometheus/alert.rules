@@ -1,0 +1,20 @@
+groups:
+  - name: weather_etl_alerts
+    rules:
+      - alert: ETLPipelineFailed
+        expr: weather_etl_run_success == 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Weather ETL Pipeline failed"
+          description: "The last execution of the Weather ETL Pipeline failed."
+
+      - alert: ETLPipelineSilent
+        expr: (time() - weather_etl_last_success_timestamp_seconds) > 600
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Weather ETL Pipeline silent"
+          description: "The Weather ETL Pipeline has not executed successfully in the last 10 minutes."

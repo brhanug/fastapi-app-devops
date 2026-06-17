@@ -96,3 +96,61 @@ def test_extract_data(mock_get):
         "https://api.test",
         params={"latitude": "1.0", "longitude": "2.0", "current_weather": "true"},
     )
+
+
+@patch("etl.push_to_gateway")
+@patch("etl.load_data")
+@patch("etl.transform_data")
+@patch("etl.extract_data")
+@patch("etl.init_db")
+def test_run_etl_metrics(
+    mock_init_db, mock_extract, mock_transform, mock_load, mock_push_to_gateway
+):
+    """Test that metrics are updated and pushed to the Pushgateway upon run_etl success."""
+    import etl
+
+    mock_load.return_value = True
+
+    # Store before values
+    before_records = etl.weather_etl_records._value.get()
+
+    # Backup pushgateway URL and set it to non-empty
+    old_url = etl.PUSHGATEWAY_URL
+    etl.PUSHGATEWAY_URL = "http://localhost:9091"
+
+    try:
+        etl.run_etl()
+
+        mock_push_to_gateway.assert_called_once_with(
+            "http://localhost:9091", job="weather_etl", registry=etl.registry
+        )
+        assert etl.weather_etl_success._value.get() == 1.0
+        assert etl.weather_etl_records._value.get() == before_records + 1.0
+        assert etl.weather_etl_last_success._value.get() > 0.0
+    finally:
+        etl.PUSHGATEWAY_URL = old_url
+
+
+@patch("etl.push_to_gateway")
+@patch("etl.extract_data")
+@patch("etl.init_db")
+def test_run_etl_failure_metrics(mock_init_db, mock_extract, mock_push_to_gateway):
+    """Test that metrics are updated (success=0) and pushed to Pushgateway upon run_etl failure."""
+    import etl
+
+    mock_extract.side_effect = Exception("API connection error")
+
+    # Backup pushgateway URL and set it to non-empty
+    old_url = etl.PUSHGATEWAY_URL
+    etl.PUSHGATEWAY_URL = "http://localhost:9091"
+
+    try:
+        with pytest.raises(Exception, match="API connection error"):
+            etl.run_etl()
+
+        mock_push_to_gateway.assert_called_once_with(
+            "http://localhost:9091", job="weather_etl", registry=etl.registry
+        )
+        assert etl.weather_etl_success._value.get() == 0.0
+    finally:
+        etl.PUSHGATEWAY_URL = old_url
